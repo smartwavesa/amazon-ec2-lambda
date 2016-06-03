@@ -1,6 +1,7 @@
 import json
 import boto3
 import base64
+import uuid
 from datetime import datetime
 import logging
 logger = logging.getLogger()
@@ -34,47 +35,78 @@ def lambda_handler(event, context):
 	ipaddress = ''
 	host_name = ''
 	domain = ''
+	aliases = None
 	
-	instance = table.get_item(
+	instanceDb = table.get_item(
 		Key={
 			'InstanceId': instance_id
 		},
 		AttributesToGet=[
 			'Hostname',
 			'Domain',
-			'IpAddress'
+			'IpAddress',
+			'Aliases'
 			]
 	)
 	
-	instance.pop('ResponseMetadata')
-		
-	if 'Item' not in instance:
-		instance = compute.describe_instances(InstanceIds=[instance_id])
+	instanceDb.pop('ResponseMetadata')
+	
+	instance = compute.describe_instances(InstanceIds=[instance_id])
+
+	if 'Item' not in instanceDb:
 		ipaddress = instance['Reservations'][0]['Instances'][0]['PrivateIpAddress']
 		userData = compute.describe_instance_attribute(InstanceId=instance_id,Attribute='userData')
-		udJson=json.loads(base64.b64decode(userData['UserData']['Value']))
-		host_name=udJson['hostname']
-		domain=udJson['domainname']
-		table.put_item(
-			Item={
-				'InstanceId': instance_id,
-				'Hostname': host_name,
-				'Domain': domain,
-				'IpAddress': ipaddress
-			}
-		)
+		udJson = json.loads(base64.b64decode(userData['UserData']['Value']))
+		host_name = udJson['hostname']
+		domain = udJson['domainname']
+		if 'aliases' in udJson:
+			aliases = udJson['aliases']
+		
+		if aliases is None:
+			table.put_item(
+				Item = {
+					'InstanceId': instance_id,
+					'Hostname': host_name,
+					'Domain': domain,
+					'IpAddress': ipaddress
+				}
+			)
+		else:
+			table.put_item(
+				Item = {
+					'InstanceId': instance_id,
+					'Hostname': host_name,
+					'Domain': domain,
+					'IpAddress': ipaddress,
+					'Aliases': aliases
+				}
+			)
+			
 	else:
-		domain=instance['Item']['Domain']
-		host_name=instance['Item']['Hostname']
-		ipaddress=instance['Item']['IpAddress']
+		domain=instanceDb['Item']['Domain']
+		host_name=instanceDb['Item']['Hostname']
+		ipaddress=instanceDb['Item']['IpAddress']
+		aliases = instanceDb['Item']['Aliases']
 	
 	zoneid = get_zone_id(domain)
 	
+	if zoneid is None:
+		vpcid = instance['Reservations'][0]['Instances'][0]['VpcId']
+		region = event['region']
+		create_hosted_zone(vpcid, domain, region)
+		zoneid = get_zone_id(domain)
+	
 	if state == 'running':
-		create_resource_record(zoneid, host_name, domain, 'A', ipaddress)
+		create_resource_record(zoneid, host_name+'.'+domain+'.', 'A', ipaddress)
+		if aliases is not None:
+			for alias in aliases:
+				create_resource_record(zoneid, alias+'.'+domain+'.', 'CNAME', host_name+'.'+domain)
 	elif state == 'stopped' or state == 'shutting-down':
 		try:
-			delete_resource_record(zoneid, host_name, domain, 'A', ipaddress)
+			delete_resource_record(zoneid, host_name+'.'+domain+'.', 'A', ipaddress)
+			if aliases is not None:
+				for alias in aliases:
+					delete_resource_record(zoneid, alias+'.'+domain+'.', 'CNAME', host_name+'.'+domain)
 		except BaseException as e:
 			logger.error(e)
 		if state == 'shutting-down':
@@ -107,13 +139,9 @@ def create_table(table_name):
     table = dynamodb_resource.Table(table_name)
     table.wait_until_exists()
 	
-def create_resource_record(zone_id, host_name, hosted_zone_name, type, value):
+def create_resource_record(zone_id, name, type, value):
     """This function creates resource records in the hosted zone passed by the calling function."""
-    print 'Updating %s record %s in zone %s ' % (type, host_name, hosted_zone_name)
-    if host_name[-1] != '.':
-        host_name = host_name + '.'
-    if hosted_zone_name[-1] != '.':
-        hosted_zone_name = hosted_zone_name + '.'
+    print 'Updating %s record %s with %s ' % (type, name, value)
     route53.change_resource_record_sets(
                 HostedZoneId=zone_id,
                 ChangeBatch={
@@ -122,7 +150,7 @@ def create_resource_record(zone_id, host_name, hosted_zone_name, type, value):
                         {
                             "Action": "UPSERT",
                             "ResourceRecordSet": {
-                                "Name": host_name + hosted_zone_name,
+                                "Name": name,
                                 "Type": type,
                                 "TTL": 60,
                                 "ResourceRecords": [
@@ -136,13 +164,9 @@ def create_resource_record(zone_id, host_name, hosted_zone_name, type, value):
                 }
             )
 
-def delete_resource_record(zone_id, host_name, hosted_zone_name, type, value):
+def delete_resource_record(zone_id, name, type, value):
     """This function deletes resource records from the hosted zone passed by the calling function."""
-    print 'Deleting %s record %s in zone %s' % (type, host_name, hosted_zone_name)
-    if host_name[-1] != '.':
-        host_name = host_name + '.'
-    if hosted_zone_name[-1] != '.':
-        hosted_zone_name = hosted_zone_name + '.'
+    print 'Deleting %s record %s with %s' % (type, name, value)
     route53.change_resource_record_sets(
                 HostedZoneId=zone_id,
                 ChangeBatch={
@@ -151,7 +175,7 @@ def delete_resource_record(zone_id, host_name, hosted_zone_name, type, value):
                         {
                             "Action": "DELETE",
                             "ResourceRecordSet": {
-                                "Name": host_name + hosted_zone_name,
+                                "Name": name,
                                 "Type": type,
                                 "TTL": 60,
                                 "ResourceRecords": [
@@ -177,3 +201,18 @@ def get_zone_id(zone_name):
         return zone_id
     except:
         return None
+
+def create_hosted_zone(vpcid, domain, region):
+	"""Creates the reverse lookup zone."""
+	print 'Creating hosted zone %s' % domain + '.'
+	route53.create_hosted_zone(
+		Name = domain + '.',
+		VPC = {
+			'VPCRegion':region,
+			'VPCId': vpcid
+		},
+		CallerReference=str(uuid.uuid1()),
+		HostedZoneConfig={
+			'Comment': 'Updated by Lambda DDNS',
+		},
+	)
