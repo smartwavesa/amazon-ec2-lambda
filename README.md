@@ -7,7 +7,7 @@ User data should be as follow:
 {
     "hostname": "your-marvelous-hostname",
     "domainname": "your-marvelous-domain.com",
-    "aliases": ["your-incredible-alias-1","your-incredible-alias-1"],
+    "aliases": ["your-incredible-alias-1","your-incredible-alias-2"],
 }
 ```
 
