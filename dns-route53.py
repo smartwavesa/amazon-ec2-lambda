@@ -19,24 +19,27 @@ def lambda_handler(event, context):
 	instances that have been created along with their attributes.  This is necessary because when you terminate an instance
 	its attributes are no longer available, so they have to be fetched from the table."""
 	tables = dynamodb_client.list_tables()
-	
+
 	if 'DDNS' in tables['TableNames']:
 		print 'DynamoDB table already exists'
 	else:
 		create_table('DDNS')
-	
+
 	# Set variables
 	# Get the state from the Event stream
 	state = event['detail']['state']
 	# Get the instance id, region, and tag collection
+	logger.info(event['detail'])
 	instance_id = event['detail']['instance-id']
 	table = dynamodb_resource.Table('DDNS')
-	
-	ipaddress = ''
+
+
+	instance = compute.describe_instances(InstanceIds=[instance_id])
+	ipaddress = instance['Reservations'][0]['Instances'][0]['PrivateIpAddress']
 	host_name = ''
 	domain = ''
 	aliases = None
-	
+
 	instanceDb = table.get_item(
 		Key={
 			'InstanceId': instance_id
@@ -48,54 +51,56 @@ def lambda_handler(event, context):
 			'Aliases'
 			]
 	)
-	
-	instanceDb.pop('ResponseMetadata')
-	
-	instance = compute.describe_instances(InstanceIds=[instance_id])
 
-	if 'Item' not in instanceDb:
-		ipaddress = instance['Reservations'][0]['Instances'][0]['PrivateIpAddress']
-		userData = compute.describe_instance_attribute(InstanceId=instance_id,Attribute='userData')
+	instanceDb.pop('ResponseMetadata')
+
+	userData = compute.describe_instance_attribute(InstanceId=instance_id,Attribute='userData')
+	
+	if 'UserData' in userData and 'Value' in userData['UserData']:
 		udJson = json.loads(base64.b64decode(userData['UserData']['Value']))
 		host_name = udJson['hostname']
 		domain = udJson['domainname']
 		if 'aliases' in udJson:
 			aliases = udJson['aliases']
-		
+
+	if 'Item' in instanceDb:
+		if not domain:
+			domain=instanceDb['Item']['Domain']
+		if not host_name:
+			host_name=instanceDb['Item']['Hostname']
+		#ipaddress=instanceDb['Item']['IpAddress']
 		if aliases is None:
-			table.put_item(
-				Item = {
-					'InstanceId': instance_id,
-					'Hostname': host_name,
-					'Domain': domain,
-					'IpAddress': ipaddress
-				}
-			)
-		else:
-			table.put_item(
-				Item = {
-					'InstanceId': instance_id,
-					'Hostname': host_name,
-					'Domain': domain,
-					'IpAddress': ipaddress,
-					'Aliases': aliases
-				}
-			)
-			
+			if 'Aliases' in instanceDb['Item']:
+				aliases = instanceDb['Item']['Aliases']
+
+	if aliases is None:
+		table.put_item(
+			Item = {
+				'InstanceId': instance_id,
+				'Hostname': host_name,
+				'Domain': domain,
+				'IpAddress': ipaddress
+			}
+		)
 	else:
-		domain=instanceDb['Item']['Domain']
-		host_name=instanceDb['Item']['Hostname']
-		ipaddress=instanceDb['Item']['IpAddress']
-		aliases = instanceDb['Item']['Aliases']
-	
+		table.put_item(
+			Item = {
+				'InstanceId': instance_id,
+				'Hostname': host_name,
+				'Domain': domain,
+				'IpAddress': ipaddress,
+				'Aliases': aliases
+			}
+		)
+
 	zoneid = get_zone_id(domain)
-	
+
 	if zoneid is None:
 		vpcid = instance['Reservations'][0]['Instances'][0]['VpcId']
 		region = event['region']
 		create_hosted_zone(vpcid, domain, region)
 		zoneid = get_zone_id(domain)
-	
+
 	if state == 'running':
 		create_resource_record(zoneid, host_name+'.'+domain+'.', 'A', ipaddress)
 		if aliases is not None:
@@ -138,7 +143,7 @@ def create_table(table_name):
         )
     table = dynamodb_resource.Table(table_name)
     table.wait_until_exists()
-	
+
 def create_resource_record(zone_id, name, type, value):
     """This function creates resource records in the hosted zone passed by the calling function."""
     print 'Updating %s record %s with %s ' % (type, name, value)
