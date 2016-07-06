@@ -84,7 +84,7 @@ def handler(event, context):
 		for inst in instancesToStop:
 			hostIds.append(inst['InstanceId'])
 		logger.info('Stopping instances with ids: {}'.format(str(hostIds)))
-		client.stop_instances(InstanceIds=instancesToStop)
+		client.stop_instances(InstanceIds=hostIds)
 		buildMessageForSQS('Stopped',instancesToStop)
 		
 	return{
