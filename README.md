@@ -6,7 +6,7 @@ This script allows to update route53 dns routes using a given hostname/domain pa
 
 First script will look into the tags of the instance: Hostname, Domainname, Aliases
 
-![Alt text](/sc1.png?raw=true "Tags on EC2 instance")
+![Alt text](sc/sc1.png?raw=true "Tags on EC2 instance")
 
 If one of Hostname or Domain tag is not found, then script will check user data for following JSON
 
