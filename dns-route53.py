@@ -33,7 +33,6 @@ def lambda_handler(event, context):
 	instance_id = event['detail']['instance-id']
 	table = dynamodb_resource.Table('DDNS')
 
-
 	instance = compute.describe_instances(InstanceIds=[instance_id])
 	ipaddress = instance['Reservations'][0]['Instances'][0]['PrivateIpAddress']
 	host_name = ''
@@ -54,14 +53,32 @@ def lambda_handler(event, context):
 
 	instanceDb.pop('ResponseMetadata')
 
-	userData = compute.describe_instance_attribute(InstanceId=instance_id,Attribute='userData')
-	
-	if 'UserData' in userData and 'Value' in userData['UserData']:
-		udJson = json.loads(base64.b64decode(userData['UserData']['Value']))
-		host_name = udJson['hostname']
-		domain = udJson['domainname']
-		if 'aliases' in udJson:
-			aliases = udJson['aliases']
+	instanceTags = compute.describe_tags(Filters=[
+        {
+            'Name': 'resource-id',
+            'Values': [
+                instance_id,
+            ],
+        },
+    ],)
+
+	if 'Tags' in instanceTags and len(instanceTags['Tags'])>0:
+		for tag in instanceTags['Tags']:
+			if 'Key' in tag and tag['Key'].lower() == 'hostname':
+				host_name = tag['Value']
+			if 'Key' in tag and tag['Key'].lower() == 'domainname':
+				domain = tag['Value']
+			if 'Key' in tag and tag['Key'].lower() == 'aliases':
+				aliases = tag['Value'].split(",")
+
+	if host_name is None or domain is None:
+		userData = compute.describe_instance_attribute(InstanceId=instance_id,Attribute='userData')
+		if 'UserData' in userData and 'Value' in userData['UserData']:
+			udJson = json.loads(base64.b64decode(userData['UserData']['Value']))
+			host_name = udJson['hostname']
+			domain = udJson['domainname']
+			if 'aliases' in udJson:
+				aliases = udJson['aliases']
 
 	if 'Item' in instanceDb:
 		if not domain:
