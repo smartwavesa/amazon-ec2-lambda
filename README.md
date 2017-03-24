@@ -20,6 +20,6 @@ User data should be as follow:
 }
 ```
 
-##star-stop-instances.py
+## star-stop-instances.py
 
 This script allows to start stop instances based on a 'Schedule' tag, that should be set to 'office_hours' or 'always'. Once trigerred the script will make sure instances with tag office_hours are started in during office hours and stopped otherwise. Instances with tag always, will be started if not already running.
